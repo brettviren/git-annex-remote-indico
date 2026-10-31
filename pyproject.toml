@@ -1,0 +1,34 @@
+[project]
+name = "git-annex-remote-indico"
+version = "0.1.0"
+description = "A git-annex special remote for Indico sites: ingest events, categories and their files"
+readme = "README.md"
+authors = [
+    { name = "Brett Viren", email = "brett.viren@gmail.com" }
+]
+license = "GPL-3.0-or-later"
+requires-python = ">=3.11"
+dependencies = [
+    # The external special remote protocol.
+    "annexremote>=1.6",
+    "click>=8.1",
+]
+
+[project.scripts]
+git-annex-remote-indico = "annex_indico.cli:main"
+git-indico = "annex_indico.cli:git_indico"
+
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
