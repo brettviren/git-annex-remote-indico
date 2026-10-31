@@ -208,7 +208,10 @@ class Client:
         headers = {"Accept": accept, "User-Agent": self.user_agent}
         if self.owns(url):
             headers.update(self.headers)
-        for attempt in range(retries + 1):
+        narrow = False  # the token was refused for want of a scope; asking without it
+        attempt = -1
+        while attempt < retries:
+            attempt += 1
             if self.requests:
                 self._sleep(self.pause)
             self.requests += 1
@@ -219,12 +222,22 @@ class Client:
                     return consume(response)
             except HTTPError as exc:
                 said, own_words = _said(exc)
+                if exc.code == 403 and "Authorization" in headers and (_short_scope(said) or method == "HEAD"):
+                    # A token without the scope a web page needs is refused even where no token
+                    # is needed at all; what is public can still be had without it.
+                    log.info("%s: the token is refused%s; asking without it", url, said)
+                    headers = {k: v for k, v in headers.items() if k != "Authorization"}
+                    narrow, attempt = True, attempt - 1
+                    continue
                 # a gateway in front of a site may refuse for a while, and says so in HTML;
                 # the site itself says why it refuses in JSON, and that is for good
-                again = exc.code in RETRY or (exc.code == 403 and not own_words and method == "GET")
+                again = exc.code in RETRY or (exc.code == 403 and not own_words and method == "GET" and not narrow)
                 if not again or attempt == retries:
                     hint = ""
-                    if exc.code == 403 and not own_words:
+                    if narrow:
+                        hint = (" (and the token was refused for want of a scope: files of protected "
+                                "events and category pages need a token with the scope read:everything)")
+                    elif exc.code == 403 and not own_words:
                         hint = (" (a gateway may be refusing this program's user agent; try: "
                                 f"git config --global indico.{self.base}.useragent curl/8.5.0)")
                     raise IndicoError(f"{url}: {exc.code} {exc.reason}{said}{hint}", exc.code) from exc
@@ -246,7 +259,11 @@ class Client:
         return answer if isinstance(answer, dict) else None
 
     def category(self, number: int | str) -> dict:
-        """A category's own information: ``{"category": {...}, "subcategories": [...], ...}``."""
+        """A category's own information: ``{"category": {...}, "subcategories": [...], ...}``.
+
+        This is a web endpoint, not the export API: a token needs ``read:everything`` for it
+        (without that scope it is asked for without the token, which does for public categories).
+        """
         answer = self.get(f"category/{number}/info")
         if not isinstance(answer, dict) or "category" not in answer:
             raise IndicoError(f"{self.base}: category {number}: not what was expected")
@@ -348,6 +365,11 @@ def _said(exc: HTTPError) -> tuple[str, bool]:
     text = (title.group(1) if title else re.sub(r"<[^>]+>", " ", raw)).split()
     summary = " ".join([*([f"from {sender}"] if sender else []), *text[:12]])
     return (f" (not in the site's own words: {summary})" if summary else ""), False
+
+
+def _short_scope(said: str) -> bool:
+    """Whether the site refused a token for want of a scope (not for the user's lack of access)."""
+    return "higher privileges" in said or "insufficient_scope" in said or "scope" in said.lower()
 
 
 def _retry_after(exc: HTTPError, attempt: int) -> float:

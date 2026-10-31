@@ -18,6 +18,8 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 import pytest
 
 TOKEN = "indp_secret-test-token"
+#: A token with the scope read:legacy_api only: good for the export API, refused by web pages.
+NARROW = "indp_narrow-test-token"
 
 
 def git(root: Path, *args, input=None) -> str:
@@ -84,8 +86,18 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, data, status=200):
         self._send(status, json.dumps(data).encode())
 
-    def _authorized(self) -> bool:
-        return self.headers.get("Authorization") == f"Bearer {TOKEN}"
+    def _authorized(self, web: bool = False) -> bool:
+        given = self.headers.get("Authorization")
+        return given == f"Bearer {TOKEN}" or (not web and given == f"Bearer {NARROW}")
+
+    def _scope_refused(self, head=False) -> bool:
+        """Indico refuses a token without the scope a web page needs, even for a public page."""
+        if self.headers.get("Authorization") == f"Bearer {NARROW}":
+            body = json.dumps({"message": "The request requires higher privileges than provided by "
+                                          "the access token."}).encode()
+            self._send(403, body, head=head)
+            return True
+        return False
 
     def do_HEAD(self):
         self.do_GET(head=True)
@@ -113,6 +125,8 @@ class Handler(BaseHTTPRequestHandler):
                 {"id": 0, "name": "Home"}, {"id": number, "name": "Group meetings"}]}]}
             return self._json({"count": len(page), "results": page, "additionalInfo": info})
         if path.startswith("/category/") and path.endswith("/info"):
+            if self._scope_refused():
+                return
             number = int(path.split("/")[2])
             c = self.site.categories.get(number)
             if not c:
@@ -121,8 +135,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/user/":
             return self._json({"full_name": "Brett Viren", "email": "bv@example.org"} if self._authorized() else None)
         if path in self.site.files:
+            if self._scope_refused(head):
+                return
             number = int(path.split("/")[2])
-            if number in self.site.protected and not self._authorized():
+            if number in self.site.protected and not self._authorized(web=True):
                 return self._send(403, b"<html><title>Forbidden</title></html>", "text/html", head)
             return self._send(200, self.site.files[path], "application/octet-stream", head)
         if unquote(path) != path and quote(unquote(path)) in self.site.files:

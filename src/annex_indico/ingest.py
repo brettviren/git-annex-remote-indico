@@ -23,6 +23,7 @@ Nothing is committed unless a message is given; the changes are staged.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import tempfile
 from collections.abc import Callable
@@ -173,12 +174,20 @@ def _site(top: Path, base: str, targets: list[Target], options: Options, progres
         for t in targets:
             if t.kind == "category":
                 progress(f"category {t.number}")
-                info = client.category(t.number)
+                try:
+                    info = client.category(t.number)
+                except IndicoError as exc:
+                    if exc.status is None:
+                        raise
+                    info = None
+                    report.warnings.append(f"category {t.number}: {exc}; described from its events instead")
                 listed = {}
                 for e in client.events(t.number, options.since, options.until, "events", paths=paths):
                     listed[str(e["id"])] = e
                 file = tree.category_dir(t.number) / tree.CATEGORY_JSON
                 old = _read_json(root / file)
+                if info is None:
+                    info = _category_from(t.number, paths, old)
                 texts[file] = tree.dumps(tree.category_record(base, info, listed.values(), old))
                 report.categories += 1
                 progress(f"category {t.number}: {len(listed)} events")
@@ -260,20 +269,36 @@ def _materials(top: Path, report: Report, base: str, events: list[dict], options
                 size, md5 = client.download(m.url, Path(scratch) / "file")
         key = git.key_for(size, md5, PurePosixPath(m.path).name)
         have = keys.get(m.path)
-        if have and git.md5_of(have) == md5.lower():
+        # in place only if it is in the work tree too (datalad rerun removes a run's files first)
+        if have and git.md5_of(have) == md5.lower() and os.path.lexists(top / m.path):
             report.count("same")
             if not options.dry_run:
                 kept.append(m)  # in the tree already; its page still links to it
             continue
         m.key = key
-        report.count("changed" if have else "new")
+        report.count("changed" if have and git.md5_of(have) != md5.lower() else "new")
         kept.append(m)
     return kept
 
 
+def _category_from(number: int, paths: dict[str, list[dict]], old: dict | None) -> dict:
+    """What can be said of a category whose own page cannot be had: what an earlier ingest kept,
+    else its place in the tree, from the paths of the categories of the events listed in it."""
+    if old and old.get("category"):
+        return {"category": old["category"], "subcategories": old.get("subcategories") or []}
+    for path in paths.values():
+        ids = [step.get("id") for step in path]
+        if number in ids:
+            path = path[:ids.index(number) + 1]
+            return {"category": {"id": number, "title": path[-1].get("title"), "path": path,
+                                 "parent_path": path[:-1]}}
+    return {"category": {"id": number, "title": f"category {number}"}}
+
+
 def _read_text(path: Path) -> str | None:
     try:
-        return path.read_text(encoding="utf-8")
+        with open(path, encoding="utf-8", newline="") as f:  # as written: descriptions hold \r\n
+            return f.read()
     except OSError:
         return None
 
@@ -293,7 +318,8 @@ def _write(path: Path, text: str, report: Report, top: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
         path.unlink()
-    path.write_text(text, encoding="utf-8")
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
     report.written.append(str(path.relative_to(top)))
 
 

@@ -10,7 +10,7 @@ import pytest
 from annex_indico import ingest, repo as annex, settings, tree
 from annex_indico.ingest import Options
 
-from conftest import TOKEN, git
+from conftest import NARROW, TOKEN, git
 
 
 def ingest1(r: Path, url: str, **kw):
@@ -73,6 +73,12 @@ def test_again_and_reupload(repo, site, meeting):
     git(repo, "commit", "-qm", "first")
     again = ingest1(repo, f"{site.base}/event/42/")
     assert again.files == {"same": 2} and again.written == []
+    # a file gone from the work tree (as datalad rerun leaves it) is put back
+    gone = material(repo, tree.site_prefix(site.base), slides)
+    gone.unlink()
+    back = ingest1(repo, f"{site.base}/event/42/")
+    assert back.files == {"same": 1, "new": 1} and gone.is_symlink()
+    assert git(repo, "status", "--porcelain") == ""
 
     prefix = tree.site_prefix(site.base)
     path = str(material(repo, prefix, talk).relative_to(repo))
@@ -240,3 +246,37 @@ def test_paths_and_keys():
     t = ingest.target("https://indico.fnal.gov/event/68034/contributions/308635/attachments/1/2/x.pdf")
     assert (t.base, t.kind, t.number) == ("https://indico.fnal.gov", "event", 68034)
     assert ingest.target("https://example.org/indico/category/5").base == "https://example.org/indico"
+
+
+def test_narrow_token(repo, site, meeting):
+    """A token with read:legacy_api only: public category pages and files are had without it."""
+    event, slides, talk = meeting
+    site.categories[7] = {"info": {"id": 7, "title": "Group meetings"}}
+    git(repo, "config", f"indico.{site.base}.tokencommand", f"echo {NARROW}")
+    report = ingest1(repo, f"{site.base}/category/7/", since=date(2026, 1, 1))
+    assert (report.categories, report.events, report.files) == (1, 1, {"new": 2})
+    assert not report.warnings
+    record = json.loads((repo / tree.site_prefix(site.base) / "category/7/category.json").read_text())
+    assert record["category"]["title"] == "Group meetings"
+    git(repo, "commit", "-qm", "ingest")
+    path = str(material(repo, tree.site_prefix(site.base), talk).relative_to(repo))
+    git(repo, "annex", "get", path)
+    assert (repo / path).read_bytes() == b"noise talk v1"
+    remote = annex.remote_name(site.base)
+    key = annex.lookupkeys(repo, [path])[path]
+    assert subprocess.run(["git", "annex", "checkpresentkey", key, remote], cwd=repo).returncode == 0
+
+    # a protected file cannot be had with it, and the error says which scope is missing
+    site.protected.add(42)
+    git(repo, "annex", "drop", "--force", path)
+    done = subprocess.run(["git", "annex", "get", path], cwd=repo, capture_output=True, text=True)
+    assert done.returncode != 0 and "read:everything" in done.stderr
+
+
+def test_category_without_its_page(repo, site):
+    """A category whose page cannot be had at all is described from the paths of its events."""
+    site.event(1, "Meeting 1", "2026-01-05")
+    report = ingest1(repo, f"{site.base}/category/7/", since=date(2026, 1, 1))
+    assert report.events == 1 and report.warnings
+    record = json.loads((repo / tree.site_prefix(site.base) / "category/7/category.json").read_text())
+    assert record["category"]["title"] == "Group meetings" and record["category"]["parent_path"][0]["id"] == 0

@@ -14,6 +14,10 @@ git indico ingest --since 2025-01-01 https://indico.bnl.gov/category/201/ -m "BN
 git annex get indico.bnl.gov/event/27078          # or: datalad get ...
 ```
 
+How-tos: [docs/howtos](docs/howtos/README.md), including
+[Indico in a DataLad dataset](docs/howtos/datalad.md) and
+[tokens, and what to do about a 403](docs/howtos/tokens.md).
+
 ## Install
 
 ```
@@ -133,8 +137,10 @@ The token, first found wins:
 
 **Scopes.** Make a token at `https://SITE/user/tokens/`. Reading the
 records of protected events needs the scope `read:legacy_api`. Downloading
-the files of protected events goes through the site's web pages, so it
-needs `read:everything`. Public events need no token at all. A token is
+the files of protected events, and category pages, go through the site's
+web pages, so they need `read:everything`. A token that lacks the scope is
+refused even for public pages, so such requests are retried without it.
+Public events need no token at all. A token is
 never sent to another host (not even on a redirect), and never printed.
 
 Other settings:
