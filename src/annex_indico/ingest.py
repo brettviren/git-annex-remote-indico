@@ -33,7 +33,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
 from . import repo as git
-from . import settings, tree
+from . import settings, share, tree
 from .client import IndicoError
 
 log = logging.getLogger(__name__)
@@ -151,7 +151,19 @@ def ingest(
         by_site.setdefault(t.base, []).append(t)
     if options.prefix and len(by_site) > 1:
         raise IngestError("--prefix is for one site at a time")
-    return [_site(top, base, targets, options, progress) for base, targets in by_site.items()]
+    origin = share.origin_of(top)
+    # in a shared dataset, what is written must be the group's to change too
+    umask = os.umask(0)
+    os.umask(umask & ~0o070 if share.shared_config(top) and not origin else umask)
+    try:
+        reports = [_site(top, base, targets, options, progress) for base, targets in by_site.items()]
+    finally:
+        os.umask(umask)
+    if origin:
+        for r in reports:
+            r.warnings.append(f"this is a shared clone of {origin}: what is ingested here stays here; "
+                              f"to share it, ingest in {origin}")
+    return reports
 
 
 def _site(top: Path, base: str, targets: list[Target], options: Options, progress) -> Report:

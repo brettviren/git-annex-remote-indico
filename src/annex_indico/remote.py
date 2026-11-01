@@ -17,6 +17,11 @@ put there by people, through the site.
 Whether the site still has a key is answered from the event's record: a
 file uploaded again keeps its URL, so the URL answering is not enough; the
 checksum the site gives for it must be the key's.
+
+Where what is got may be read by others (a shared dataset, or a shared
+clone of one: see :mod:`.share`), a file the site gives only with a token is
+refused, unless ``indico.shareprotected`` is true for the site: one user's
+token is not to open a protected event's files to everyone in the group.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from pathlib import Path
 
 from annexremote import Master, RemoteError, SpecialRemote
 
-from . import settings, tree
+from . import settings, share, tree
 from .client import IndicoError
 from .repo import md5_of
 
@@ -36,6 +41,7 @@ class IndicoRemote(SpecialRemote):
         super().__init__(annex)
         self.base: str | None = None
         self._client = None
+        self._exposure: str | None | bool = False  # not yet asked
         self._events: dict[str, dict | None] = {}
         self.configs = {"url": "the Indico site, such as https://indico.bnl.gov"}
 
@@ -135,6 +141,7 @@ class IndicoRemote(SpecialRemote):
         urls = self.urls(key)
         if not urls:
             raise RemoteError(f"no URL of {self.base} is recorded for {key}")
+        self._guard(key, urls)
         errors = []
         for url in urls:
             try:
@@ -143,6 +150,30 @@ class IndicoRemote(SpecialRemote):
             except IndicoError as exc:
                 errors.append(str(exc))
         raise RemoteError("; ".join(errors))
+
+    def _guard(self, key, urls) -> None:
+        """Refuse a protected file where others would be able to read it."""
+        if not self.client().authenticated:
+            return  # without a token only what is public can be had anyway
+        if self._exposure is False:
+            try:
+                self._exposure = share.exposure()
+            except share.ShareError:
+                self._exposure = None
+        if not self._exposure:
+            return
+        allowed = (settings.git_config("shareprotected", self.base) or "").lower()
+        if allowed in ("true", "yes", "on", "1"):
+            return
+        try:
+            if any(self.client().public(url) for url in urls):
+                return
+        except IndicoError as exc:
+            raise RemoteError(f"cannot tell whether {key} is public: {exc}") from exc
+        raise RemoteError(
+            f"{urls[0]} is protected on the site, and what is got here others may read "
+            f"({self._exposure}); get it in a dataset of your own, or, if the group may see it, "
+            f"git config --global indico.{self.base}.shareprotected true")
 
     def transfer_store(self, key, filename):
         raise RemoteError("an Indico site is read only here: upload through the site")

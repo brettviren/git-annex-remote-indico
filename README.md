@@ -15,13 +15,14 @@ git annex get indico.bnl.gov/event/27078          # or: datalad get ...
 ```
 
 How-tos: [docs/howtos](docs/howtos/README.md), including
-[Indico in a DataLad dataset](docs/howtos/datalad.md) and
+[Indico in a DataLad dataset](docs/howtos/datalad.md),
+[sharing a site among the users of a computer](docs/howtos/shared.md) and
 [tokens, and what to do about a 403](docs/howtos/tokens.md).
 
 ## Install
 
 ```
-uv tool install git+file:///path/to/git-annex-remote-indico   # or: pipx install ..., pip install ...
+uv tool install git+https://github.com/brettviren/git-annex-remote-indico   # or: pipx install git+https://...
 ```
 
 This installs two programs, which must be on `PATH`:
@@ -111,6 +112,21 @@ indico-bnl`, `checkpresentkey`), the remote compares the key's MD5 with the
 checksum the site gives for that URL now. A URL that still answers after
 the file was replaced is not mistaken for the old content.
 
+## Shared datasets
+
+On a computer with several users, one dataset of a site can serve them all,
+so each file is downloaded and stored once
+([how-to](docs/howtos/shared.md)):
+
+```
+git indico share /srv/datalad/indico/bnl                 # a dataset shared by a group (core.sharedRepository=group)
+git indico clone /srv/datalad/indico/bnl ~/indico/bnl    # yours: an ephemeral DataLad clone using its annex
+```
+
+What is got in a shared dataset or clone, the group can read. So the remote
+refuses there a file the site gives only with a token, unless
+`indico.shareprotected` is true for the site.
+
 ## Tokens and settings
 
 Settings are per user, in git config, and can be given per site, the way
@@ -147,13 +163,17 @@ Other settings:
 
 - `indico.useragent`: FNAL's site sits behind Cloudflare, which refuses
   user agents it doesn't know (`curl/8.5.0` gets through);
-- `indico.pause`: seconds between requests.
+- `indico.pause`: seconds between requests;
+- `indico.shareprotected`: get the files of protected events in shared
+  datasets too (see above).
 
 ## Not (yet) done
 
 - **Publishing to Indico.** git-annex's import/export interface for external
   remotes is still a draft, and Indico has no documented API for uploading.
 - **The legacy API key with a signature.** Use a personal token instead.
+- **A download cache across shared datasets.** Shared clones already store
+  each file once per computer (see above).
 - **Notes (minutes) as separate files.** They are in `event.json` and shown
   on the page.
 

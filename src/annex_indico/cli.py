@@ -189,3 +189,63 @@ def remotes(where):
         _fail(exc)
     for r in found:
         click.echo(f"{r.name}\t{r.url}\t{'enabled' if r.enabled else 'not enabled here'}\t{r.uuid}")
+
+
+@cli.command("share")
+@click.argument("path", type=click.Path(file_okay=False, path_type=Path))
+@click.option("--group", help="The Unix group to share with (default: the group of PATH's directory).")
+def share_(path, group):
+    """Make PATH a dataset shared by a group of users of this computer.
+
+    PATH is made a DataLad dataset (or a git-annex repository, without DataLad)
+    if it is not a repository yet; an existing one is kept.  It gets
+    core.sharedRepository=group, and everything in it the group and the
+    owner's permissions, with directories passing the group on.  Run it again
+    to repair what someone with a narrow umask left.
+
+    Users then make their own clones with `git indico clone PATH`, and
+    whatever any of them gets is stored once, here.
+
+    \b
+      install -d -g indico -m 2775 /srv/datalad/indico      # once, by an admin
+      git indico share /srv/datalad/indico/bnl
+      git -C /srv/datalad/indico/bnl indico ingest -m "BNL colloquia" https://indico.bnl.gov/category/201/
+    """
+    from .repo import RepoError
+    from .share import ShareError, share
+    try:
+        found = share(path, group)
+    except (ShareError, RepoError, OSError) as exc:
+        _fail(exc)
+    for line in found.done or ["already shared; nothing to do"]:
+        click.echo(line)
+    click.echo(f"{found.path}: shared with the group {found.group}; clone it with: git indico clone {found.path}")
+
+
+@cli.command("clone")
+@click.argument("source", type=click.Path(file_okay=False, path_type=Path))
+@click.argument("path", type=click.Path(file_okay=False, path_type=Path), required=False)
+@click.option("-d", "--dataset", type=click.Path(file_okay=False, path_type=Path),
+              help="Make the clone a subdataset of this dataset.")
+def clone_(source, path, dataset):
+    """Make your own clone of a shared dataset (see `git indico share`).
+
+    The clone's annex is the shared dataset's: what you get is stored once,
+    there, and can be read by the group (so the files of protected events
+    are refused: see indico.shareprotected).  Don't drop files in it:
+    that removes them for everyone.  PATH defaults to SOURCE's name.
+
+    \b
+      git indico clone /srv/datalad/indico/bnl ~/indico/bnl
+      git indico clone -d ~/work /srv/datalad/indico/bnl ~/work/indico/bnl
+    """
+    from .repo import RepoError
+    from .share import ShareError, clone
+    try:
+        found = clone(source, path, dataset)
+    except (ShareError, RepoError, OSError) as exc:
+        _fail(exc)
+    for line in found.done:
+        click.echo(line)
+    click.echo(f"{found.path}: get files with datalad get; take what others ingested with "
+               f"datalad update --how merge")

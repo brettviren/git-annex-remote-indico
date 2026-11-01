@@ -75,6 +75,9 @@ class IndicoError(Exception):
         self.status = status
 
 
+#: Asks for a file's first byte only: whether it is there, without HEAD.
+_FIRST_BYTE = {"Range": "bytes=0-0"}
+
 #: Request headers that must not follow a redirect to another host.
 _CREDENTIALS = ("authorization", "cookie")
 
@@ -156,13 +159,31 @@ class Client:
         return self._request(url, decode, "application/json", retries)
 
     def head(self, url: str) -> bool:
-        """Whether the site would give ``url`` now."""
+        """Whether the site would give ``url`` now.
+
+        Asked with a GET of its first byte: some sites (indico.bnl.gov) refuse HEAD.
+        """
         try:
-            return self._request(url, lambda r: True, "*/*", 0, method="HEAD")
+            return self._request(url, lambda r: True, "*/*", 0, extra=_FIRST_BYTE)
         except IndicoError as exc:
             if exc.status in (401, 403, 404, 410):
                 return False
             raise
+
+    def public(self, url: str) -> bool:
+        """Whether the site gives ``url`` to anyone: asked without credentials, it answers with the
+        thing itself, not a refusal and not a redirect to its login page."""
+        bare = {k: v for k, v in self.headers.items() if k != "Authorization"}
+        saved, self.headers = self.headers, bare
+        try:
+            return self._request(url, lambda r: urlsplit(r.geturl()).path == urlsplit(url).path,
+                                 "*/*", 0, extra=_FIRST_BYTE)
+        except IndicoError as exc:
+            if exc.status in (401, 403, 404, 410):
+                return False
+            raise
+        finally:
+            self.headers = saved
 
     def download(
         self, url: str, target: Path, progress: Callable[[int], None] | None = None
@@ -203,9 +224,10 @@ class Client:
         accept: str,
         retries: int | None = None,
         method: str = "GET",
+        extra: dict[str, str] | None = None,
     ) -> Any:
         retries = self.retries if retries is None else retries
-        headers = {"Accept": accept, "User-Agent": self.user_agent}
+        headers = {"Accept": accept, "User-Agent": self.user_agent, **(extra or {})}
         if self.owns(url):
             headers.update(self.headers)
         narrow = False  # the token was refused for want of a scope; asking without it
@@ -222,7 +244,7 @@ class Client:
                     return consume(response)
             except HTTPError as exc:
                 said, own_words = _said(exc)
-                if exc.code == 403 and "Authorization" in headers and (_short_scope(said) or method == "HEAD"):
+                if exc.code == 403 and "Authorization" in headers and _short_scope(said):
                     # A token without the scope a web page needs is refused even where no token
                     # is needed at all; what is public can still be had without it.
                     log.info("%s: the token is refused%s; asking without it", url, said)
